@@ -1,10 +1,12 @@
 import yfinance as yf
-import ta
 import pandas as pd
+import numpy as np
 import time
+import datetime
 import telegram
+import ta
 
-# Dati Telegram
+# TOKEN e CHAT_ID del bot
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
 CHAT_ID = "585847488"
 bot = telegram.Bot(token=TOKEN)
@@ -14,84 +16,86 @@ def send_signal(message):
 
 def get_xauusd_data():
     try:
-        data = yf.download("XAUUSD=X", period="7d", interval="1m", progress=False)
-        if data.empty:
-            raise ValueError("Nessun dato ricevuto per XAUUSD")
-        return data
+        df = yf.download("XAUUSD=X", interval="5m", period="1d")
+        if df is None or df.empty:
+            print("Dati non disponibili o vuoti.")
+            return None
+        return df
     except Exception as e:
         print(f"Errore durante il download dei dati: {e}")
         return None
 
-def analyze(data):
-    df = data.copy()
-    df.dropna(inplace=True)
+def calculate_indicators(df):
+    df['EMA20'] = ta.trend.ema_indicator(df['Close'], window=20)
+    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    macd = ta.trend.macd_diff(df['Close'])
+    df['MACD_Hist'] = macd
+    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    return df
 
-    # Calcolo indicatori
-    df['rsi'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
-    df['macd'] = ta.trend.MACD(close=df['Close']).macd_diff()
-    df['ema_fast'] = ta.trend.EMAIndicator(close=df['Close'], window=9).ema_indicator()
-    df['ema_slow'] = ta.trend.EMAIndicator(close=df['Close'], window=21).ema_indicator()
-    df['atr'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
+def check_signal(df):
+    if df is None or df.empty:
+        return
 
     latest = df.iloc[-1]
 
-    signal_strength = 0
-    signal = None
-
-    # RSI
-    if latest['rsi'] < 30:
-        signal_strength += 1
-    elif latest['rsi'] > 70:
-        signal_strength -= 1
-
-    # MACD
-    if latest['macd'] > 0:
-        signal_strength += 1
-    elif latest['macd'] < 0:
-        signal_strength -= 1
+    ema_signal = None
+    rsi_signal = None
+    macd_signal = None
 
     # EMA
-    if latest['ema_fast'] > latest['ema_slow']:
-        signal_strength += 1
-    elif latest['ema_fast'] < latest['ema_slow']:
-        signal_strength -= 1
+    if latest['Close'] > latest['EMA20']:
+        ema_signal = 'buy'
+    elif latest['Close'] < latest['EMA20']:
+        ema_signal = 'sell'
 
-    if signal_strength == 3:
-        signal = "FORTE BUY"
-    elif signal_strength == -3:
-        signal = "FORTE SELL"
-    elif signal_strength == 2:
-        signal = "BUY"
-    elif signal_strength == -2:
-        signal = "SELL"
+    # RSI
+    if latest['RSI'] < 30:
+        rsi_signal = 'buy'
+    elif latest['RSI'] > 70:
+        rsi_signal = 'sell'
 
-    return signal, latest['Close'], latest['atr']
+    # MACD Histogram
+    if latest['MACD_Hist'] > 0:
+        macd_signal = 'buy'
+    elif latest['MACD_Hist'] < 0:
+        macd_signal = 'sell'
 
-def calculate_tp_sl(price, atr, signal_strength):
-    if abs(signal_strength) == 3:
-        tp = price + atr * 3 if signal_strength > 0 else price - atr * 3
-        sl = price - atr * 1.5 if signal_strength > 0 else price + atr * 1.5
-    elif abs(signal_strength) == 2:
-        tp = price + atr * 2 if signal_strength > 0 else price - atr * 2
-        sl = price - atr if signal_strength > 0 else price + atr
-    else:
-        return None, None
-    return round(tp, 2), round(sl, 2)
+    signals = [ema_signal, rsi_signal, macd_signal]
+    signal_type = None
 
-def main():
-    while True:
-        try:
-            data = get_xauusd_data()
-            if data is not None:
-                signal, price, atr = analyze(data)
-                if signal in ["FORTE BUY", "FORTE SELL"]:
-                    tp, sl = calculate_tp_sl(price, atr, 3 if "BUY" in signal else -3)
-                    message = f"{signal}\nPrezzo: {price:.2f}\nTP: {tp}\nSL: {sl}"
-                    send_signal(message)
-            time.sleep(300)  # 5 minuti
-        except Exception as e:
-            print(f"Errore: {e}")
-            time.sleep(300)
+    if signals.count('buy') >= 2:
+        signal_type = 'FORTE BUY'
+    elif signals.count('sell') >= 2:
+        signal_type = 'FORTE SELL'
 
-if __name__ == "__main__":
-    main()
+    # Calcolo TP/SL dinamici
+    if signal_type:
+        atr = latest['ATR']
+        entry = latest['Close']
+        if signal_type == 'FORTE BUY':
+            tp = entry + (2.5 * atr if signals.count('buy') == 3 else 1.5 * atr)
+            sl = entry - (1.5 * atr)
+        else:
+            tp = entry - (2.5 * atr if signals.count('sell') == 3 else 1.5 * atr)
+            sl = entry + (1.5 * atr)
+
+        message = (
+            f"{signal_type} su XAU/USD\n\n"
+            f"Prezzo: {entry:.2f}\n"
+            f"Take Profit: {tp:.2f}\n"
+            f"Stop Loss: {sl:.2f}\n\n"
+            f"RSI: {latest['RSI']:.2f}\n"
+            f"MACD Histogram: {latest['MACD_Hist']:.4f}\n"
+            f"EMA20: {latest['EMA20']:.2f}"
+        )
+        send_signal(message)
+
+# Loop principale ogni 5 minuti
+while True:
+    print(f"[{datetime.datetime.now()}] Controllo segnali...")
+    df = get_xauusd_data()
+    if df is not None:
+        df = calculate_indicators(df)
+        check_signal(df)
+    time.sleep(300)  # 5 minuti
