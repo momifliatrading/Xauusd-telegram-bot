@@ -1,101 +1,116 @@
-import yfinance as yf
+import requests
 import pandas as pd
-import numpy as np
 import time
-import datetime
 import telegram
-import ta
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, EMAIndicator
+from ta.volatility import AverageTrueRange
 
-# TOKEN e CHAT_ID del bot
+# Dati Telegram
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
 CHAT_ID = "585847488"
 bot = telegram.Bot(token=TOKEN)
+
+# API Key Alpha Vantage
+API_KEY = "WURVR7KA6AES8K9B"
 
 def send_signal(message):
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def get_xauusd_data():
+    url = (
+        f"https://www.alphavantage.co/query?function=FX_INTRADAY"
+        f"&from_symbol=XAU&to_symbol=USD&interval=1min&outputsize=full&apikey={API_KEY}"
+    )
+    response = requests.get(url)
+    data = response.json()
+    
     try:
-        df = yf.download("XAUUSD=X", interval="5m", period="1d")
-        if df is None or df.empty:
-            print("Dati non disponibili o vuoti.")
-            return None
+        raw_data = data["Time Series FX (1min)"]
+        df = pd.DataFrame.from_dict(raw_data, orient="index")
+        df = df.rename(columns={
+            "1. open": "Open",
+            "2. high": "High",
+            "3. low": "Low",
+            "4. close": "Close"
+        })
+        df = df.astype(float)
+        df.sort_index(inplace=True)
         return df
     except Exception as e:
-        print(f"Errore durante il download dei dati: {e}")
+        print(f"Errore nel parsing dei dati: {e}")
         return None
 
-def calculate_indicators(df):
-    df['EMA20'] = ta.trend.ema_indicator(df['Close'], window=20)
-    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-    macd = ta.trend.macd_diff(df['Close'])
-    df['MACD_Hist'] = macd
-    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
-    return df
+def analyze(data):
+    df = data.copy()
+    df.dropna(inplace=True)
 
-def check_signal(df):
-    if df is None or df.empty:
-        return
+    # Indicatori
+    df['rsi'] = RSIIndicator(close=df['Close'], window=14).rsi()
+    df['macd'] = MACD(close=df['Close']).macd_diff()
+    df['ema_fast'] = EMAIndicator(close=df['Close'], window=9).ema_indicator()
+    df['ema_slow'] = EMAIndicator(close=df['Close'], window=21).ema_indicator()
+    df['atr'] = AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
 
     latest = df.iloc[-1]
 
-    ema_signal = None
-    rsi_signal = None
-    macd_signal = None
-
-    # EMA
-    if latest['Close'] > latest['EMA20']:
-        ema_signal = 'buy'
-    elif latest['Close'] < latest['EMA20']:
-        ema_signal = 'sell'
+    signal_strength = 0
+    signal = None
 
     # RSI
-    if latest['RSI'] < 30:
-        rsi_signal = 'buy'
-    elif latest['RSI'] > 70:
-        rsi_signal = 'sell'
+    if latest['rsi'] < 30:
+        signal_strength += 1
+    elif latest['rsi'] > 70:
+        signal_strength -= 1
 
-    # MACD Histogram
-    if latest['MACD_Hist'] > 0:
-        macd_signal = 'buy'
-    elif latest['MACD_Hist'] < 0:
-        macd_signal = 'sell'
+    # MACD
+    if latest['macd'] > 0:
+        signal_strength += 1
+    elif latest['macd'] < 0:
+        signal_strength -= 1
 
-    signals = [ema_signal, rsi_signal, macd_signal]
-    signal_type = None
+    # EMA
+    if latest['ema_fast'] > latest['ema_slow']:
+        signal_strength += 1
+    elif latest['ema_fast'] < latest['ema_slow']:
+        signal_strength -= 1
 
-    if signals.count('buy') >= 2:
-        signal_type = 'FORTE BUY'
-    elif signals.count('sell') >= 2:
-        signal_type = 'FORTE SELL'
+    if signal_strength == 3:
+        signal = "FORTE BUY"
+    elif signal_strength == -3:
+        signal = "FORTE SELL"
+    elif signal_strength == 2:
+        signal = "BUY"
+    elif signal_strength == -2:
+        signal = "SELL"
 
-    # Calcolo TP/SL dinamici
-    if signal_type:
-        atr = latest['ATR']
-        entry = latest['Close']
-        if signal_type == 'FORTE BUY':
-            tp = entry + (2.5 * atr if signals.count('buy') == 3 else 1.5 * atr)
-            sl = entry - (1.5 * atr)
-        else:
-            tp = entry - (2.5 * atr if signals.count('sell') == 3 else 1.5 * atr)
-            sl = entry + (1.5 * atr)
+    return signal, latest['Close'], latest['atr'], signal_strength
 
-        message = (
-            f"{signal_type} su XAU/USD\n\n"
-            f"Prezzo: {entry:.2f}\n"
-            f"Take Profit: {tp:.2f}\n"
-            f"Stop Loss: {sl:.2f}\n\n"
-            f"RSI: {latest['RSI']:.2f}\n"
-            f"MACD Histogram: {latest['MACD_Hist']:.4f}\n"
-            f"EMA20: {latest['EMA20']:.2f}"
-        )
-        send_signal(message)
+def calculate_tp_sl(price, atr, signal_strength):
+    if abs(signal_strength) == 3:
+        tp = price + atr * 3 if signal_strength > 0 else price - atr * 3
+        sl = price - atr * 1.5 if signal_strength > 0 else price + atr * 1.5
+    elif abs(signal_strength) == 2:
+        tp = price + atr * 2 if signal_strength > 0 else price - atr * 2
+        sl = price - atr if signal_strength > 0 else price + atr
+    else:
+        return None, None
+    return round(tp, 2), round(sl, 2)
 
-# Loop principale ogni 5 minuti
-while True:
-    print(f"[{datetime.datetime.now()}] Controllo segnali...")
-    df = get_xauusd_data()
-    if df is not None:
-        df = calculate_indicators(df)
-        check_signal(df)
-    time.sleep(300)  # 5 minuti
+def main():
+    while True:
+        try:
+            data = get_xauusd_data()
+            if data is not None:
+                signal, price, atr, strength = analyze(data)
+                if signal in ["FORTE BUY", "FORTE SELL"]:
+                    tp, sl = calculate_tp_sl(price, atr, strength)
+                    message = f"{signal}\nPrezzo: {price:.2f}\nTP: {tp}\nSL: {sl}"
+                    send_signal(message)
+            time.sleep(300)  # ogni 5 minuti
+        except Exception as e:
+            print(f"Errore: {e}")
+            time.sleep(300)
+
+if __name__ == "__main__":
+    main()
