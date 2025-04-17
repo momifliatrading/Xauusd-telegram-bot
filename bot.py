@@ -90,10 +90,10 @@ def main():
                 logging.info(f"Segnale inviato: {message}")
             else:
                 logging.info(f"Nessun segnale forte ({signal})")
-            time.sleep(60)
+            time.sleep(300)
         except Exception as e:
             logging.error(f"Errore: {e}")
-            time.sleep(60)
+            time.sleep(300)
 
 if __name__ == "__main__":
     main()
