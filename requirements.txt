@@ -2,4 +2,5 @@ yfinance
 pandas
 ta
 python-telegram-bot
+yfinance>=0.2.33
 
