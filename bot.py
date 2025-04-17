@@ -3,15 +3,13 @@ import pandas as pd
 import time
 import telegram
 import ta
-import traceback
+from datetime import datetime
 
-# Telegram
+# === CONFIGURAZIONE ===
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
 CHAT_ID = "585847488"
-bot = telegram.Bot(token=TOKEN)
-
-# Alpha Vantage
 API_KEY = "WURVR7KA6AES8K9B"
+
 symbols = {
     "XAU/USD": "XAUUSD",
     "EUR/USD": "EURUSD"
@@ -20,24 +18,31 @@ symbols = {
 CAPITALE = 5000
 RISCHIO_PCT = 0.02
 
+bot = telegram.Bot(token=TOKEN)
+
+# === FUNZIONI ===
 def send_signal(message):
-    print(f"Invio segnale Telegram:\n{message}")
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def get_data(symbol):
-    print(f"Scaricamento dati per {symbol}...")
     url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={API_KEY}&outputsize=compact"
     try:
         response = requests.get(url)
         data = response.json()
-        df = pd.DataFrame(data['Time Series FX (1min)']).T.astype(float)
+
+        key = 'Time Series FX (1min)'
+        if key not in data:
+            print(f"Dati non disponibili per {symbol}. Risposta: {data}")
+            return None
+
+        df = pd.DataFrame(data[key]).T.astype(float)
         df.columns = ['Open', 'High', 'Low', 'Close']
         df.index = pd.to_datetime(df.index)
         df.sort_index(inplace=True)
         return df
+
     except Exception as e:
         print(f"Errore nel download di {symbol}: {e}")
-        traceback.print_exc()
         return None
 
 def analyze(df):
@@ -47,8 +52,8 @@ def analyze(df):
     df['ema_fast'] = ta.trend.EMAIndicator(close=df['Close'], window=9).ema_indicator()
     df['ema_slow'] = ta.trend.EMAIndicator(close=df['Close'], window=21).ema_indicator()
     df['atr'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
-
     df.dropna(inplace=True)
+
     latest = df.iloc[-1]
     signal_strength = 0
     signal = None
@@ -77,7 +82,6 @@ def analyze(df):
     elif signal_strength == -2:
         signal = "SELL (debole)"
 
-    print(f"Segnale generato: {signal} | Strength: {signal_strength}")
     return signal, latest['Close'], latest['atr'], signal_strength
 
 def calculate_tp_sl(price, atr, strength):
@@ -95,36 +99,47 @@ def calculate_lot_size(sl_pips, symbol):
     if sl_pips == 0:
         return 0.01
     risk_usd = CAPITALE * RISCHIO_PCT
-    pip_value = 10
+    pip_value = 10  # Per 1 lotto standard
     lots = risk_usd / (sl_pips * pip_value)
     return round(min(max(lots, 0.01), 5), 2)
 
+# === LOOP PRINCIPALE ===
 def main():
-    print("Bot avviato con successo.")
-    while True:
-        try:
-            for name, symbol in symbols.items():
-                df = get_data(symbol)
-                if df is not None:
-                    signal, price, atr, strength = analyze(df)
-                    if signal:
-                        tp, sl = calculate_tp_sl(price, atr, strength)
-                        sl_pips = abs(price - sl) * 100
-                        lot = calculate_lot_size(sl_pips, symbol)
-                        message = (
-                            f"Strumento: {name}\n"
-                            f"Segnale: {signal}\n"
-                            f"Prezzo: {price:.5f}\n"
-                            f"TP: {tp}\nSL: {sl}\n"
-                            f"Lotto consigliato: {lot} (2% su $5000)"
-                        )
-                        send_signal(message)
-            print("Attendo 6 minuti prima del prossimo controllo...\n")
-            time.sleep(360)
-        except Exception as e:
-            print("Errore nel ciclo principale:")
-            traceback.print_exc()
-            time.sleep(10)
+    last_report_time = time.time()
 
+    while True:
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        messaggi_segnali = []
+
+        for name, symbol in symbols.items():
+            df = get_data(symbol)
+            if df is not None:
+                signal, price, atr, strength = analyze(df)
+                if signal:
+                    tp, sl = calculate_tp_sl(price, atr, strength)
+                    sl_pips = abs(price - sl) * 100
+                    lot = calculate_lot_size(sl_pips, symbol)
+                    messaggio = (
+                        f"Strumento: {name}\n"
+                        f"Segnale: {signal}\n"
+                        f"Prezzo: {price:.5f}\n"
+                        f"TP: {tp}\nSL: {sl}\n"
+                        f"Lotto consigliato: {lot} (2% su $5000)"
+                    )
+                    send_signal(messaggio)
+                    messaggi_segnali.append(messaggio)
+
+        # Invia aggiornamento ogni 30 minuti
+        if time.time() - last_report_time >= 1800:
+            last_report_time = time.time()
+            if messaggi_segnali:
+                summary = "\n\n".join(messaggi_segnali)
+            else:
+                summary = "Nessun segnale rilevato negli ultimi 30 minuti."
+            send_signal(f"[{current_time}]\nAggiornamento:\n{summary}")
+
+        time.sleep(360)  # Ogni 6 minuti
+
+# === AVVIO ===
 if __name__ == "__main__":
     main()
