@@ -4,11 +4,12 @@ import time
 def get_xauusd_data():
     ticker = yf.Ticker("XAUUSD=X")
     data = ticker.history(period="1d", interval="1m")
-    if data.empty:
-        print("Nessun dato ricevuto da Yahoo Finance.")
-    else:
+    
+    if not data.empty:
         latest = data.iloc[-1]
-        print(f"Ultimo prezzo XAU/USD: {latest['Close']}")
+        print(f"Prezzo attuale XAU/USD: {latest['Close']}")
+    else:
+        print("Nessun dato disponibile")
 
 while True:
     get_xauusd_data()
