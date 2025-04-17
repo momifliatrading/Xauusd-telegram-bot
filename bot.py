@@ -21,11 +21,10 @@ CAPITALE = 5000
 RISCHIO_PCT = 0.02
 
 def send_signal(message):
-    print(message)
     try:
         bot.send_message(chat_id=CHAT_ID, text=message)
     except Exception as e:
-        print(f"Errore nell'invio su Telegram: {e}")
+        print(f"Errore nell'invio Telegram: {e}")
 
 def get_data(symbol):
     url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={API_KEY}&outputsize=compact"
@@ -33,8 +32,7 @@ def get_data(symbol):
         response = requests.get(url)
         data = response.json()
         if "Time Series FX (1min)" not in data:
-            print(f"Errore: risposta non valida da Alpha Vantage per {symbol}.")
-            print(data)
+            print(f"Risposta API non valida per {symbol}: {data}")
             return None
         df = pd.DataFrame(data['Time Series FX (1min)']).T.astype(float)
         df.columns = ['Open', 'High', 'Low', 'Close']
@@ -95,39 +93,40 @@ def calculate_tp_sl(price, atr, strength):
         return None, None
     return round(tp, 5), round(sl, 5)
 
-def calculate_lot_size(sl_pips):
+def calculate_lot_size(sl_pips, symbol):
     if sl_pips == 0:
         return 0.01
     risk_usd = CAPITALE * RISCHIO_PCT
-    pip_value = 10  # Per 1 lotto standard
+    pip_value = 10  # Per 1 lotto standard su coppie in USD
     lots = risk_usd / (sl_pips * pip_value)
     return round(min(max(lots, 0.01), 5), 2)
 
 def main():
+    send_signal("✅ Bot avviato e in esecuzione.")
     last_update = time.time()
+
     while True:
+        now = datetime.datetime.now().strftime("%H:%M:%S")
         for name, symbol in symbols.items():
             df = get_data(symbol)
             if df is not None:
                 signal, price, atr, strength = analyze(df)
                 if signal:
                     tp, sl = calculate_tp_sl(price, atr, strength)
-                    if tp and sl:
-                        sl_pips = abs(price - sl) * 100
-                        lot = calculate_lot_size(sl_pips)
-                        message = (
-                            f"Strumento: {name}\n"
-                            f"Segnale: {signal}\n"
-                            f"Prezzo: {price:.5f}\n"
-                            f"TP: {tp}\nSL: {sl}\n"
-                            f"Lotto consigliato: {lot} (2% su $5000)"
-                        )
-                        send_signal(message)
+                    sl_pips = abs(price - sl) * 100  # Per calcolo lottaggio
+                    lot = calculate_lot_size(sl_pips, symbol)
+                    message = (
+                        f"Strumento: {name}\n"
+                        f"Segnale: {signal}\n"
+                        f"Prezzo: {price:.5f}\n"
+                        f"TP: {tp}\nSL: {sl}\n"
+                        f"Lotto consigliato: {lot} (2% su $5000)"
+                    )
+                    send_signal(message)
 
-        # Ogni 30 minuti invia aggiornamento anche se non ci sono segnali
+        # Invia aggiornamento ogni 30 minuti
         if time.time() - last_update >= 1800:
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            send_signal(f"Aggiornamento: il bot è attivo. Ora: {now}")
+            send_signal(f"⏰ Aggiornamento automatico - ora {now}")
             last_update = time.time()
 
         time.sleep(360)  # ogni 6 minuti
