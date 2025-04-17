@@ -10,7 +10,6 @@ def get_xauusd_data():
     else:
         print("Nessun dato ricevuto.")
 
-# Loop ogni 60 secondi
 while True:
     get_xauusd_data()
     time.sleep(60)
