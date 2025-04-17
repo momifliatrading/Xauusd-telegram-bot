@@ -3,6 +3,10 @@ import ta
 import pandas as pd
 import time
 import telegram
+import logging
+
+# Configura il logging
+logging.basicConfig(level=logging.INFO)
 
 # Dati Telegram
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
@@ -21,7 +25,7 @@ def analyze(data):
     df = data.copy()
     df.dropna(inplace=True)
 
-    # Calcolo indicatori
+    # Indicatori tecnici
     df['rsi'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
     df['macd'] = ta.trend.MACD(close=df['Close']).macd_diff()
     df['ema_fast'] = ta.trend.EMAIndicator(close=df['Close'], window=9).ema_indicator()
@@ -33,13 +37,13 @@ def analyze(data):
     signal_strength = 0
     signal = None
 
-    # RSI: sotto 30 = buy, sopra 70 = sell
+    # RSI
     if latest['rsi'] < 30:
         signal_strength += 1
     elif latest['rsi'] > 70:
         signal_strength -= 1
 
-    # MACD: positivo = buy, negativo = sell
+    # MACD
     if latest['macd'] > 0:
         signal_strength += 1
     elif latest['macd'] < 0:
@@ -51,7 +55,7 @@ def analyze(data):
     elif latest['ema_fast'] < latest['ema_slow']:
         signal_strength -= 1
 
-    # Decidi il segnale in base alla forza
+    # Segnale finale
     if signal_strength == 3:
         signal = "FORTE BUY"
     elif signal_strength == -3:
@@ -61,7 +65,7 @@ def analyze(data):
     elif signal_strength == -2:
         signal = "SELL"
 
-    return signal, latest['Close'], latest['atr']
+    return signal, latest['Close'], latest['atr'], signal_strength
 
 def calculate_tp_sl(price, atr, signal_strength):
     if abs(signal_strength) == 3:
@@ -78,14 +82,17 @@ def main():
     while True:
         try:
             data = get_xauusd_data()
-            signal, price, atr = analyze(data)
+            signal, price, atr, strength = analyze(data)
             if signal in ["FORTE BUY", "FORTE SELL"]:
-                tp, sl = calculate_tp_sl(price, atr, 3 if "BUY" in signal else -3)
-                message = f"{signal}\nPrezzo: {price}\nTP: {tp}\nSL: {sl}"
+                tp, sl = calculate_tp_sl(price, atr, strength)
+                message = f"{signal}\nPrezzo: {price:.2f}\nTP: {tp}\nSL: {sl}"
                 send_signal(message)
+                logging.info(f"Segnale inviato: {message}")
+            else:
+                logging.info(f"Nessun segnale forte ({signal})")
             time.sleep(60)
         except Exception as e:
-            print(f"Errore: {e}")
+            logging.error(f"Errore: {e}")
             time.sleep(60)
 
 if __name__ == "__main__":
