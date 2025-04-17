@@ -1,4 +1,5 @@
 import yfinance as yf
+import requests
 
 def get_price():
     ticker = yf.Ticker("XAUUSD=X")
@@ -6,11 +7,18 @@ def get_price():
     if data.empty:
         return None
     return round(data['Close'].iloc[-1], 2)
-import os
-import requests
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+def send_telegram_message(message):
+    bot_token = 'YOUR_BOT_TOKEN'
+    chat_id = 'YOUR_CHAT_ID'
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {'chat_id': chat_id, 'text': message}
+    response = requests.post(url, data=payload)
+    return response.json()
 
-# Messaggio di test
-requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={CHAT_ID}&text=✅+Bot+collegato+correttamente!")
+# Test
+price = get_price()
+if price:
+    send_telegram_message(f"Prezzo attuale XAU/USD: {price}")
+else:
+    send_telegram_message("Errore nel recupero del prezzo.")
