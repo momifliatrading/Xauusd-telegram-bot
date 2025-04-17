@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import telegram
 import ta
+import traceback
 
 # Telegram
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
@@ -20,9 +21,11 @@ CAPITALE = 5000
 RISCHIO_PCT = 0.02
 
 def send_signal(message):
+    print(f"Invio segnale Telegram:\n{message}")
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def get_data(symbol):
+    print(f"Scaricamento dati per {symbol}...")
     url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={API_KEY}&outputsize=compact"
     try:
         response = requests.get(url)
@@ -34,6 +37,7 @@ def get_data(symbol):
         return df
     except Exception as e:
         print(f"Errore nel download di {symbol}: {e}")
+        traceback.print_exc()
         return None
 
 def analyze(df):
@@ -73,6 +77,7 @@ def analyze(df):
     elif signal_strength == -2:
         signal = "SELL (debole)"
 
+    print(f"Segnale generato: {signal} | Strength: {signal_strength}")
     return signal, latest['Close'], latest['atr'], signal_strength
 
 def calculate_tp_sl(price, atr, strength):
@@ -90,29 +95,36 @@ def calculate_lot_size(sl_pips, symbol):
     if sl_pips == 0:
         return 0.01
     risk_usd = CAPITALE * RISCHIO_PCT
-    pip_value = 10  # Per 1 lotto standard su coppie in USD
+    pip_value = 10
     lots = risk_usd / (sl_pips * pip_value)
     return round(min(max(lots, 0.01), 5), 2)
 
 def main():
+    print("Bot avviato con successo.")
     while True:
-        for name, symbol in symbols.items():
-            df = get_data(symbol)
-            if df is not None:
-                signal, price, atr, strength = analyze(df)
-                if signal:
-                    tp, sl = calculate_tp_sl(price, atr, strength)
-                    sl_pips = abs(price - sl) * 100  # Per calcolo lottaggio
-                    lot = calculate_lot_size(sl_pips, symbol)
-                    message = (
-                        f"Strumento: {name}\n"
-                        f"Segnale: {signal}\n"
-                        f"Prezzo: {price:.5f}\n"
-                        f"TP: {tp}\nSL: {sl}\n"
-                        f"Lotto consigliato: {lot} (2% su $5000)"
-                    )
-                    send_signal(message)
-        time.sleep(360)  # 6 minuti
+        try:
+            for name, symbol in symbols.items():
+                df = get_data(symbol)
+                if df is not None:
+                    signal, price, atr, strength = analyze(df)
+                    if signal:
+                        tp, sl = calculate_tp_sl(price, atr, strength)
+                        sl_pips = abs(price - sl) * 100
+                        lot = calculate_lot_size(sl_pips, symbol)
+                        message = (
+                            f"Strumento: {name}\n"
+                            f"Segnale: {signal}\n"
+                            f"Prezzo: {price:.5f}\n"
+                            f"TP: {tp}\nSL: {sl}\n"
+                            f"Lotto consigliato: {lot} (2% su $5000)"
+                        )
+                        send_signal(message)
+            print("Attendo 6 minuti prima del prossimo controllo...\n")
+            time.sleep(360)
+        except Exception as e:
+            print("Errore nel ciclo principale:")
+            traceback.print_exc()
+            time.sleep(10)
 
 if __name__ == "__main__":
     main()
