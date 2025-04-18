@@ -3,60 +3,55 @@ import pandas as pd
 import time
 import telegram
 import ta
-import numpy as np
 
-# === CONFIG ===
+# === CONFIGURAZIONE ===
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
 CHAT_ID = "585847488"
-API_KEY = "WURVR7KA6AES8K9B"
 CAPITALE = 5000
 RISCHIO_PCT = 0.02
-symbols = {
-    "XAU/USD": "XAUUSD",
-    "EUR/USD": "EURUSD"
-}
+symbols = {"XAU/USD": "XAUUSD", "EUR/USD": "EURUSD"}
+API_KEYS = ["WURVR7KA6AES8K9B", "HSQEM45D73VB2136"]
+
 bot = telegram.Bot(token=TOKEN)
 
-# === FUNZIONI ===
 def send_signal(message):
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def get_data(symbol):
-    url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={API_KEY}&outputsize=compact"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        df = pd.DataFrame(data['Time Series FX (1min)']).T.astype(float)
-        df.columns = ['Open', 'High', 'Low', 'Close']
-        df.index = pd.to_datetime(df.index)
-        df.sort_index(inplace=True)
-        return df
-    except Exception as e:
-        print(f"Errore nel download di {symbol}: {e}")
-        return None
+    for api_key in API_KEYS:
+        url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={api_key}&outputsize=compact"
+        try:
+            response = requests.get(url)
+            data = response.json()
+            if "Time Series FX (1min)" in data:
+                df = pd.DataFrame(data['Time Series FX (1min)']).T.astype(float)
+                df.columns = ['Open', 'High', 'Low', 'Close']
+                df.index = pd.to_datetime(df.index)
+                df.sort_index(inplace=True)
+                return df
+        except:
+            continue
+    return None
 
-def detect_candlestick(df):
-    last = df.iloc[-2]  # Penultima candela
-    curr = df.iloc[-1]  # Ultima candela
+def is_breakout(df):
+    recent = df[-20:]
+    max_high = recent['High'][:-1].max()
+    min_low = recent['Low'][:-1].min()
+    last_close = recent['Close'].iloc[-1]
 
-    body = curr['Close'] - curr['Open']
-    range_ = curr['High'] - curr['Low']
-    upper_wick = curr['High'] - max(curr['Open'], curr['Close'])
-    lower_wick = min(curr['Open'], curr['Close']) - curr['Low']
+    if last_close > max_high:
+        return "BREAKOUT BUY"
+    elif last_close < min_low:
+        return "BREAKOUT SELL"
+    return None
 
-    # Engulfing
-    prev_body = last['Close'] - last['Open']
-    if body > 0 and prev_body < 0 and curr['Open'] < last['Close'] and curr['Close'] > last['Open']:
+def confirm_candlestick(df):
+    last = df.iloc[-2]
+    current = df.iloc[-1]
+    if current['Close'] > current['Open'] and last['Close'] < last['Open']:
         return "bullish_engulfing"
-    elif body < 0 and prev_body > 0 and curr['Open'] > last['Close'] and curr['Close'] < last['Open']:
+    elif current['Close'] < current['Open'] and last['Close'] > last['Open']:
         return "bearish_engulfing"
-
-    # Hammer / Shooting Star
-    if body > 0 and lower_wick > body * 2 and upper_wick < body:
-        return "hammer"
-    elif body < 0 and upper_wick > abs(body) * 2 and lower_wick < abs(body):
-        return "shooting_star"
-
     return None
 
 def analyze(df):
@@ -81,18 +76,14 @@ def analyze(df):
     if latest['ema_fast'] > latest['ema_slow']: signal_strength += 1
     elif latest['ema_fast'] < latest['ema_slow']: signal_strength -= 1
 
-    if signal_strength == 3: signal = "FORTE BUY"
-    elif signal_strength == -3: signal = "FORTE SELL"
-    elif signal_strength == 2: signal = "BUY (debole)"
-    elif signal_strength == -2: signal = "SELL (debole)"
-
-    pattern = detect_candlestick(df)
-
-    # Filtro candlestick
-    if signal in ["FORTE BUY", "BUY (debole)"] and pattern not in ["bullish_engulfing", "hammer"]:
-        return None, None, None, None
-    if signal in ["FORTE SELL", "SELL (debole)"] and pattern not in ["bearish_engulfing", "shooting_star"]:
-        return None, None, None, None
+    if signal_strength == 3:
+        signal = "FORTE BUY"
+    elif signal_strength == -3:
+        signal = "FORTE SELL"
+    elif signal_strength == 2:
+        signal = "BUY (debole)"
+    elif signal_strength == -2:
+        signal = "SELL (debole)"
 
     return signal, latest['Close'], latest['atr'], signal_strength
 
@@ -108,8 +99,7 @@ def calculate_tp_sl(price, atr, strength):
     return round(tp, 5), round(sl, 5)
 
 def calculate_lot_size(sl_pips):
-    if sl_pips == 0:
-        return 0.01
+    if sl_pips == 0: return 0.01
     risk_usd = CAPITALE * RISCHIO_PCT
     pip_value = 10
     lots = risk_usd / (sl_pips * pip_value)
@@ -117,30 +107,34 @@ def calculate_lot_size(sl_pips):
 
 def main():
     while True:
-        report = f"Aggiornamento strategia ({pd.Timestamp.now().strftime('%H:%M:%S')}):\n\n"
         for name, symbol in symbols.items():
             df = get_data(symbol)
-            if df is not None:
-                signal, price, atr, strength = analyze(df)
-                if signal:
-                    tp, sl = calculate_tp_sl(price, atr, strength)
-                    sl_pips = abs(price - sl) * 100
-                    lot = calculate_lot_size(sl_pips)
-                    report += (
-                        f"Strumento: {name}\n"
-                        f"Segnale: {signal}\n"
-                        f"Prezzo: {price:.5f}\n"
-                        f"TP: {tp} / SL: {sl}\n"
-                        f"Lotto consigliato: {lot}\n\n"
-                    )
-                else:
-                    report += f"Strumento: {name} - Nessun segnale valido (candlestick non conferma)\n\n"
-            else:
-                report += f"Errore nel recupero dati per {name}\n\n"
+            if df is None:
+                send_signal(f"Aggiornamento strategia:\nErrore nel recupero dati per {name}")
+                continue
 
-        send_signal(report.strip())
+            signal, price, atr, strength = analyze(df)
+            breakout = is_breakout(df)
+            candle = confirm_candlestick(df)
+
+            messaggio = f"Aggiornamento strategia ({name}):\n"
+            messaggio += f"Prezzo attuale: {price:.5f}\n"
+
+            if signal:
+                tp, sl = calculate_tp_sl(price, atr, strength)
+                sl_pips = abs(price - sl) * 100
+                lot = calculate_lot_size(sl_pips)
+                messaggio += f"Segnale tecnico: {signal}\nTP: {tp}, SL: {sl}\nLotto: {lot}\n"
+            if breakout:
+                messaggio += f"Breakout rilevato: {breakout}\n"
+            if candle:
+                messaggio += f"Conferma candlestick: {candle.replace('_', ' ').capitalize()}\n"
+
+            if not signal and not breakout:
+                messaggio += "Nessun segnale forte al momento.\n"
+
+            send_signal(messaggio)
         time.sleep(1800)  # ogni 30 minuti
 
-# === START ===
 if __name__ == "__main__":
     main()
