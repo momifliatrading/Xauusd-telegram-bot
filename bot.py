@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import telegram
 import ta
+import datetime
 
 # === CONFIGURAZIONE ===
 TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
@@ -14,12 +15,17 @@ API_KEYS = ["WURVR7KA6AES8K9B", "HSQEM45D73VB2136"]
 
 bot = telegram.Bot(token=TOKEN)
 
+def log(msg):
+    print(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+
 def send_signal(message):
+    log(f"Invio messaggio Telegram:\n{message}")
     bot.send_message(chat_id=CHAT_ID, text=message)
 
 def get_data(symbol):
     for api_key in API_KEYS:
         url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=1min&apikey={api_key}&outputsize=compact"
+        log(f"Tentativo con API Key: {api_key} per {symbol}")
         try:
             response = requests.get(url)
             data = response.json()
@@ -28,9 +34,12 @@ def get_data(symbol):
                 df.columns = ['Open', 'High', 'Low', 'Close']
                 df.index = pd.to_datetime(df.index)
                 df.sort_index(inplace=True)
+                log(f"Dati ricevuti con successo per {symbol}")
                 return df
-        except:
-            continue
+            else:
+                log(f"Nessun dato valido nella risposta per {symbol} - Messaggio: {data.get('Note', 'Nessuna nota')}")
+        except Exception as e:
+            log(f"Errore nel recupero dati per {symbol} con API {api_key}: {e}")
     return None
 
 def is_breakout(df):
@@ -107,7 +116,9 @@ def calculate_lot_size(sl_pips):
 
 def main():
     while True:
+        log("=== Nuova analisi ===")
         for name, symbol in symbols.items():
+            log(f"Analisi per {name}")
             df = get_data(symbol)
             if df is None:
                 send_signal(f"Aggiornamento strategia:\nErrore nel recupero dati per {name}")
@@ -125,16 +136,21 @@ def main():
                 sl_pips = abs(price - sl) * 100
                 lot = calculate_lot_size(sl_pips)
                 messaggio += f"Segnale tecnico: {signal}\nTP: {tp}, SL: {sl}\nLotto: {lot}\n"
+                log(f"Segnale: {signal} | TP: {tp} | SL: {sl} | Lotto: {lot}")
             if breakout:
                 messaggio += f"Breakout rilevato: {breakout}\n"
+                log(f"Breakout: {breakout}")
             if candle:
                 messaggio += f"Conferma candlestick: {candle.replace('_', ' ').capitalize()}\n"
+                log(f"Candlestick pattern: {candle}")
 
             if not signal and not breakout:
                 messaggio += "Nessun segnale forte al momento.\n"
+                log("Nessun segnale forte.")
 
             send_signal(messaggio)
-        time.sleep(1800)  # ogni 30 minuti
+        log("Attendo 30 minuti...\n")
+        time.sleep(1800)
 
 if __name__ == "__main__":
     main()
