@@ -1,114 +1,121 @@
 import requests
 import pandas as pd
-from datetime import datetime
-from telegram import Bot
-from apscheduler.schedulers.blocking import BlockingScheduler
+import numpy as np
 import ta
+from datetime import datetime
+from pytz import utc
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+import telegram
 
 # === CONFIG ===
-API_KEYS = [
-    "G1DLU6EXR0XKXKWE",
-    "HSQEM45D73VB2136"
-]
-
-TELEGRAM_TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
-CHAT_ID = "585847488"
+TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
+CHAT_ID = '585847488'
+API_KEYS = ['4G8M6XH4J90KZ71K', 'HSQEM45D73VB2136']  # Le tue due API key
+SYMBOLS = ['XAU/USD', 'EUR/USD']
 CAPITAL = 5000
-RISK = 0.02
+RISK_PERCENTAGE = 0.02
 
-symbols = {
-    "XAU/USD": ("XAU", "USD"),
-    "EUR/USD": ("EUR", "USD")
-}
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
+api_index = 0
 
-bot = Bot(token=TELEGRAM_TOKEN)
-
-# === FUNZIONI ===
-
-def get_data(from_symbol, to_symbol):
-    for api_key in API_KEYS:
-        url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={from_symbol}&to_symbol={to_symbol}&interval=5min&apikey={api_key}&outputsize=compact"
-        print(f"[{datetime.now()}] Chiamata API: {url}")
-        try:
-            response = requests.get(url)
-            data = response.json()
-
-            if "Time Series FX (5min)" in data:
-                df = pd.DataFrame(data['Time Series FX (5min)']).T.astype(float)
-                df.columns = ['Open', 'High', 'Low', 'Close']
-                df.index = pd.to_datetime(df.index)
-                df.sort_index(inplace=True)
-                return df
-            else:
-                print(f"[{datetime.now()}] Risposta senza dati validi per {from_symbol}/{to_symbol}: {data}")
-        except Exception as e:
-            print(f"[{datetime.now()}] Errore nella richiesta per {from_symbol}/{to_symbol} con {api_key}: {e}")
-    return None
+def get_alpha_vantage_data(symbol, interval='30min', api_key=''):
+    function = "FX_INTRADAY"
+    from_symbol, to_symbol = symbol.split('/')
+    url = (
+        f'https://www.alphavantage.co/query?function={function}&from_symbol={from_symbol}'
+        f'&to_symbol={to_symbol}&interval={interval}&outputsize=compact&apikey={api_key}'
+    )
+    r = requests.get(url)
+    data = r.json()
+    if f'Time Series FX ({interval})' not in data:
+        print(f"Errore nella risposta: {data}")
+        return None
+    df = pd.DataFrame(data[f'Time Series FX ({interval})']).T.astype(float)
+    df.columns = ['open', 'high', 'low', 'close']
+    df.index = pd.to_datetime(df.index)
+    df.sort_index(inplace=True)
+    return df
 
 def analyze(df):
-    df['EMA20'] = ta.trend.ema_indicator(df['Close'], window=20)
-    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-    macd = ta.trend.macd_diff(df['Close'])
+    df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+    macd = ta.trend.MACD(df['close'])
+    df['macd'] = macd.macd()
+    df['macd_signal'] = macd.macd_signal()
+    df['ema'] = ta.trend.EMAIndicator(df['close'], window=50).ema_indicator()
+    df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close']).average_true_range()
+    bb = ta.volatility.BollingerBands(df['close'])
+    df['bb_high'] = bb.bollinger_hband()
+    df['bb_low'] = bb.bollinger_lband()
+    ichi = ta.trend.IchimokuIndicator(df['high'], df['low'])
+    df['tenkan'] = ichi.ichimoku_conversion_line()
+    df['kijun'] = ichi.ichimoku_base_line()
+    return df
 
-    last_rsi = df['RSI'].iloc[-1]
-    last_macd = macd.iloc[-1]
-    last_price = df['Close'].iloc[-1]
-    last_ema = df['EMA20'].iloc[-1]
+def generate_signal(df):
+    latest = df.iloc[-1]
+    signals = []
 
-    buy = last_rsi < 30 and last_macd > 0 and last_price > last_ema
-    sell = last_rsi > 70 and last_macd < 0 and last_price < last_ema
+    # Segnali principali
+    if latest['rsi'] < 30 and latest['macd'] > latest['macd_signal'] and latest['close'] > latest['ema']:
+        signals.append('FORTE BUY')
+    elif latest['rsi'] > 70 and latest['macd'] < latest['macd_signal'] and latest['close'] < latest['ema']:
+        signals.append('FORTE SELL')
+    elif latest['rsi'] < 40 and latest['macd'] > latest['macd_signal']:
+        signals.append('DEBOLE BUY')
+    elif latest['rsi'] > 60 and latest['macd'] < latest['macd_signal']:
+        signals.append('DEBOLE SELL')
 
-    if buy or sell:
-        direction = "BUY" if buy else "SELL"
-        strength = "FORTE"
-        return direction, strength, last_price
-    return None, None, None
+    # Filtri di conferma
+    bb_confirm = latest['close'] < latest['bb_low'] or latest['close'] > latest['bb_high']
+    ichi_confirm = latest['tenkan'] > latest['kijun'] if 'BUY' in signals[0] else latest['tenkan'] < latest['kijun']
 
-def calculate_tp_sl(price, direction):
-    atr = 0.003  # Fisso per ora
-    if direction == "BUY":
-        tp = price + 2 * atr
-        sl = price - atr
-    else:
-        tp = price - 2 * atr
-        sl = price + atr
-    return round(tp, 4), round(sl, 4)
+    if signals:
+        confermato = bb_confirm or ichi_confirm
+        return signals[0], latest['atr'], confermato
+    return None, None, False
 
-def calculate_lot_size(price, sl, capital, risk):
-    risk_amount = capital * risk
-    stop_loss_pips = abs(price - sl)
-    if stop_loss_pips == 0:
-        return 0.01
-    lot_size = risk_amount / (stop_loss_pips * 100000)
-    return round(min(max(lot_size, 0.01), 5), 2)
+def calcola_lotto(atr, sl_pips):
+    rischio = CAPITAL * RISK_PERCENTAGE
+    valore_pip = rischio / sl_pips
+    lotto = round(valore_pip / 10, 2)  # semplificato per FX standard
+    return max(lotto, 0.01)
 
-def invia_messaggio(msg):
-    try:
-        bot.send_message(chat_id=CHAT_ID, text=msg)
-    except Exception as e:
-        print(f"[{datetime.now()}] Errore nell’invio Telegram: {e}")
+def invia_messaggio(symbol, segnale, atr, confermato):
+    sl = round(atr * 1.5, 3)
+    tp = round(atr * (2.5 if 'FORTE' in segnale else 1.5), 3)
+    lotto = calcola_lotto(atr, sl)
 
-def main():
-    for name, (from_symbol, to_symbol) in symbols.items():
-        df = get_data(from_symbol, to_symbol)
+    stato = "CONFERMATO" if confermato else "DA CONFERMARE"
+    msg = (
+        f"**Segnale {segnale} su {symbol}**\n"
+        f"Stato: {stato}\n"
+        f"TP: {tp} | SL: {sl}\n"
+        f"Lotto consigliato: {lotto}\n"
+        f"Orario: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
+
+def job():
+    global api_index
+    for symbol in SYMBOLS:
+        key = API_KEYS[api_index % len(API_KEYS)]
+        api_index += 1
+        df = get_alpha_vantage_data(symbol, api_key=key)
         if df is None:
-            print(f"[{datetime.now()}] Errore nel recupero dati per {name}")
             continue
+        df = analyze(df)
+        segnale, atr, confermato = generate_signal(df)
+        if segnale:
+            invia_messaggio(symbol, segnale, atr, confermato)
 
-        direction, strength, price = analyze(df)
-        if direction:
-            tp, sl = calculate_tp_sl(price, direction)
-            lot = calculate_lot_size(price, sl, CAPITAL, RISK)
-            msg = (
-                f"Segnale {strength} {direction} su {name}\n"
-                f"Prezzo: {price}\nTP: {tp} | SL: {sl}\n"
-                f"Lotto consigliato: {lot}"
-            )
-            invia_messaggio(msg)
-        else:
-            print(f"[{datetime.now()}] Nessun segnale forte per {name}")
-
-# === SCHEDULAZIONE OGNI 6 MINUTI ===
-scheduler = BlockingScheduler()
-scheduler.add_job(main, 'interval', minutes=6)
-scheduler.start()
+if __name__ == '__main__':
+    scheduler = BackgroundScheduler(timezone=utc)
+    scheduler.add_job(job, IntervalTrigger(minutes=30))
+    scheduler.start()
+    print("Bot avviato.")
+    try:
+        while True:
+            pass
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
