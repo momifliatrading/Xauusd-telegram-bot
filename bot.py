@@ -1,153 +1,114 @@
 import requests
 import pandas as pd
-import time
-import telegram
-import ta
 from datetime import datetime
+from telegram import Bot
+from apscheduler.schedulers.blocking import BlockingScheduler
+import ta
 
-# === CONFIGURAZIONE ===
-TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
+# === CONFIG ===
+API_KEYS = [
+    "G1DLU6EXR0XKXKWE",
+    "HSQEM45D73VB2136"
+]
+
+TELEGRAM_TOKEN = "8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8"
 CHAT_ID = "585847488"
-CAPITALE = 5000
-RISCHIO_PCT = 0.02
-symbols = {"XAU/USD": "XAUUSD", "EUR/USD": "EURUSD"}
-API_KEYS = ["WURVR7KA6AES8K9B", "HSQEM45D73VB2136"]
+CAPITAL = 5000
+RISK = 0.02
 
-bot = telegram.Bot(token=TOKEN)
+symbols = {
+    "XAU/USD": ("XAU", "USD"),
+    "EUR/USD": ("EUR", "USD")
+}
 
-def log(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}")
+bot = Bot(token=TELEGRAM_TOKEN)
 
-def send_signal(message):
-    bot.send_message(chat_id=CHAT_ID, text=message)
+# === FUNZIONI ===
 
-def get_data(symbol):
+def get_data(from_symbol, to_symbol):
     for api_key in API_KEYS:
-        url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={symbol[:3]}&to_symbol={symbol[4:]}&interval=5min&apikey={api_key}&outputsize=compact"
-        log(f"Tentativo con API {api_key} per {symbol} - URL: {url}")
+        url = f"https://www.alphavantage.co/query?function=FX_INTRADAY&from_symbol={from_symbol}&to_symbol={to_symbol}&interval=5min&apikey={api_key}&outputsize=compact"
+        print(f"[{datetime.now()}] Chiamata API: {url}")
         try:
             response = requests.get(url)
             data = response.json()
+
             if "Time Series FX (5min)" in data:
                 df = pd.DataFrame(data['Time Series FX (5min)']).T.astype(float)
                 df.columns = ['Open', 'High', 'Low', 'Close']
                 df.index = pd.to_datetime(df.index)
                 df.sort_index(inplace=True)
-                log(f"Dati ricevuti per {symbol} con API {api_key}")
                 return df
             else:
-                log(f"Nessun dato per {symbol} con API {api_key}")
+                print(f"[{datetime.now()}] Risposta senza dati validi per {from_symbol}/{to_symbol}: {data}")
         except Exception as e:
-            log(f"Errore nel recupero dati per {symbol} con API {api_key}: {e}")
-    return None
-
-def is_breakout(df):
-    recent = df[-20:]
-    max_high = recent['High'][:-1].max()
-    min_low = recent['Low'][:-1].min()
-    last_close = recent['Close'].iloc[-1]
-
-    if last_close > max_high:
-        return "BREAKOUT BUY"
-    elif last_close < min_low:
-        return "BREAKOUT SELL"
-    return None
-
-def confirm_candlestick(df):
-    last = df.iloc[-2]
-    current = df.iloc[-1]
-    if current['Close'] > current['Open'] and last['Close'] < last['Open']:
-        return "bullish_engulfing"
-    elif current['Close'] < current['Open'] and last['Close'] > last['Open']:
-        return "bearish_engulfing"
+            print(f"[{datetime.now()}] Errore nella richiesta per {from_symbol}/{to_symbol} con {api_key}: {e}")
     return None
 
 def analyze(df):
-    df['rsi'] = ta.momentum.RSIIndicator(close=df['Close'], window=14).rsi()
-    macd = ta.trend.MACD(close=df['Close'])
-    df['macd'] = macd.macd_diff()
-    df['ema_fast'] = ta.trend.EMAIndicator(close=df['Close'], window=9).ema_indicator()
-    df['ema_slow'] = ta.trend.EMAIndicator(close=df['Close'], window=21).ema_indicator()
-    df['atr'] = ta.volatility.AverageTrueRange(high=df['High'], low=df['Low'], close=df['Close'], window=14).average_true_range()
-    df.dropna(inplace=True)
+    df['EMA20'] = ta.trend.ema_indicator(df['Close'], window=20)
+    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    macd = ta.trend.macd_diff(df['Close'])
 
-    latest = df.iloc[-1]
-    signal_strength = 0
-    signal = None
+    last_rsi = df['RSI'].iloc[-1]
+    last_macd = macd.iloc[-1]
+    last_price = df['Close'].iloc[-1]
+    last_ema = df['EMA20'].iloc[-1]
 
-    if latest['rsi'] < 30: signal_strength += 1
-    elif latest['rsi'] > 70: signal_strength -= 1
+    buy = last_rsi < 30 and last_macd > 0 and last_price > last_ema
+    sell = last_rsi > 70 and last_macd < 0 and last_price < last_ema
 
-    if latest['macd'] > 0: signal_strength += 1
-    elif latest['macd'] < 0: signal_strength -= 1
+    if buy or sell:
+        direction = "BUY" if buy else "SELL"
+        strength = "FORTE"
+        return direction, strength, last_price
+    return None, None, None
 
-    if latest['ema_fast'] > latest['ema_slow']: signal_strength += 1
-    elif latest['ema_fast'] < latest['ema_slow']: signal_strength -= 1
-
-    if signal_strength == 3:
-        signal = "FORTE BUY"
-    elif signal_strength == -3:
-        signal = "FORTE SELL"
-    elif signal_strength == 2:
-        signal = "BUY (debole)"
-    elif signal_strength == -2:
-        signal = "SELL (debole)"
-
-    return signal, latest['Close'], latest['atr'], signal_strength
-
-def calculate_tp_sl(price, atr, strength):
-    if abs(strength) == 3:
-        tp = price + atr * 3 if strength > 0 else price - atr * 3
-        sl = price - atr * 1.5 if strength > 0 else price + atr * 1.5
-    elif abs(strength) == 2:
-        tp = price + atr * 2 if strength > 0 else price - atr * 2
-        sl = price - atr if strength > 0 else price + atr
+def calculate_tp_sl(price, direction):
+    atr = 0.003  # Fisso per ora
+    if direction == "BUY":
+        tp = price + 2 * atr
+        sl = price - atr
     else:
-        return None, None
-    return round(tp, 5), round(sl, 5)
+        tp = price - 2 * atr
+        sl = price + atr
+    return round(tp, 4), round(sl, 4)
 
-def calculate_lot_size(sl_pips):
-    if sl_pips == 0: return 0.01
-    risk_usd = CAPITALE * RISCHIO_PCT
-    pip_value = 10
-    lots = risk_usd / (sl_pips * pip_value)
-    return round(min(max(lots, 0.01), 5), 2)
+def calculate_lot_size(price, sl, capital, risk):
+    risk_amount = capital * risk
+    stop_loss_pips = abs(price - sl)
+    if stop_loss_pips == 0:
+        return 0.01
+    lot_size = risk_amount / (stop_loss_pips * 100000)
+    return round(min(max(lot_size, 0.01), 5), 2)
+
+def invia_messaggio(msg):
+    try:
+        bot.send_message(chat_id=CHAT_ID, text=msg)
+    except Exception as e:
+        print(f"[{datetime.now()}] Errore nell’invio Telegram: {e}")
 
 def main():
-    while True:
-        for name, symbol in symbols.items():
-            df = get_data(symbol)
-            if df is None:
-                msg = f"Aggiornamento strategia:\nErrore nel recupero dati per {name}"
-                log(msg)
-                send_signal(msg)
-                continue
+    for name, (from_symbol, to_symbol) in symbols.items():
+        df = get_data(from_symbol, to_symbol)
+        if df is None:
+            print(f"[{datetime.now()}] Errore nel recupero dati per {name}")
+            continue
 
-            signal, price, atr, strength = analyze(df)
-            breakout = is_breakout(df)
-            candle = confirm_candlestick(df)
+        direction, strength, price = analyze(df)
+        if direction:
+            tp, sl = calculate_tp_sl(price, direction)
+            lot = calculate_lot_size(price, sl, CAPITAL, RISK)
+            msg = (
+                f"Segnale {strength} {direction} su {name}\n"
+                f"Prezzo: {price}\nTP: {tp} | SL: {sl}\n"
+                f"Lotto consigliato: {lot}"
+            )
+            invia_messaggio(msg)
+        else:
+            print(f"[{datetime.now()}] Nessun segnale forte per {name}")
 
-            messaggio = f"Aggiornamento strategia ({name}):\n"
-            messaggio += f"Prezzo attuale: {price:.5f}\n"
-
-            if signal:
-                tp, sl = calculate_tp_sl(price, atr, strength)
-                sl_pips = abs(price - sl) * 100
-                lot = calculate_lot_size(sl_pips)
-                messaggio += f"Segnale tecnico: {signal}\nTP: {tp}, SL: {sl}\nLotto: {lot}\n"
-            if breakout:
-                messaggio += f"Breakout rilevato: {breakout}\n"
-            if candle:
-                messaggio += f"Conferma candlestick: {candle.replace('_', ' ').capitalize()}\n"
-
-            if not signal and not breakout:
-                messaggio += "Nessun segnale forte al momento.\n"
-
-            log(f"Segnale generato per {name}:\n{messaggio}")
-            send_signal(messaggio)
-
-        time.sleep(1800)  # ogni 30 minuti
-
-if __name__ == "__main__":
-    main()
+# === SCHEDULAZIONE OGNI 6 MINUTI ===
+scheduler = BlockingScheduler()
+scheduler.add_job(main, 'interval', minutes=6)
+scheduler.start()
