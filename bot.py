@@ -7,6 +7,7 @@ from pytz import utc
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import telegram
+import time
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
@@ -18,6 +19,19 @@ RISK_PERCENTAGE = 0.02
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
 api_index = 0
+no_signal_counter = {symbol: 0 for symbol in SYMBOLS}
+
+# === FUNZIONI ===
+
+def send_telegram_alert(message):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": CHAT_ID, "text": f"[ALERT] {message}"}
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            print(f"Errore invio alert Telegram: {response.text}")
+    except Exception as e:
+        print(f"Errore nella funzione send_telegram_alert: {e}")
 
 def get_alpha_vantage_data(symbol, interval='30min', api_key=''):
     function = "FX_INTRADAY"
@@ -26,16 +40,24 @@ def get_alpha_vantage_data(symbol, interval='30min', api_key=''):
         f'https://www.alphavantage.co/query?function={function}&from_symbol={from_symbol}'
         f'&to_symbol={to_symbol}&interval={interval}&outputsize=compact&apikey={api_key}'
     )
-    r = requests.get(url)
-    data = r.json()
-    if f'Time Series FX ({interval})' not in data:
-        print(f"Errore nella risposta: {data}")
+    try:
+        print(f"[INFO] Richiesta dati per {symbol} - URL: {url}")
+        r = requests.get(url)
+        data = r.json()
+        key_data = f'Time Series FX ({interval})'
+        if key_data not in data:
+            send_telegram_alert(f"Errore: Dati non disponibili da Alpha Vantage per {symbol}")
+            print(f"[ERRORE] Dati non trovati per {symbol}: {data}")
+            return None
+        df = pd.DataFrame(data[key_data]).T.astype(float)
+        df.columns = ['open', 'high', 'low', 'close']
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+        return df
+    except Exception as e:
+        send_telegram_alert(f"Errore durante la richiesta dati per {symbol}: {e}")
+        print(f"[EXCEPTION] Errore richiesta dati per {symbol}: {e}")
         return None
-    df = pd.DataFrame(data[f'Time Series FX ({interval})']).T.astype(float)
-    df.columns = ['open', 'high', 'low', 'close']
-    df.index = pd.to_datetime(df.index)
-    df.sort_index(inplace=True)
-    return df
 
 def analyze(df):
     df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
@@ -99,22 +121,34 @@ def job():
     for symbol in SYMBOLS:
         key = API_KEYS[api_index % len(API_KEYS)]
         api_index += 1
+
         df = get_alpha_vantage_data(symbol, api_key=key)
         if df is None:
             continue
+
         df = analyze(df)
         segnale, atr, confermato = generate_signal(df)
+
         if segnale:
+            print(f"[INFO] Segnale per {symbol}: {segnale} (Confermato: {confermato})")
             invia_messaggio(symbol, segnale, atr, confermato)
+            no_signal_counter[symbol] = 0
+        else:
+            no_signal_counter[symbol] += 1
+            print(f"[INFO] Nessun segnale per {symbol}. Contatore: {no_signal_counter[symbol]}")
+            if no_signal_counter[symbol] >= 6:
+                send_telegram_alert(f"Nessun segnale su {symbol} da oltre 3 ore. Verifica funzionamento bot.")
+                no_signal_counter[symbol] = 0
 
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
     trigger = IntervalTrigger(minutes=30, timezone=utc)
     scheduler.add_job(job, trigger)
     scheduler.start()
-    print("Bot avviato.")
+    print("Bot avviato. Premere CTRL+C per fermarlo.")
     try:
         while True:
-            pass
+            time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
+        print("Bot arrestato.")
