@@ -11,7 +11,7 @@ import telegram
 # === CONFIG ===
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
 CHAT_ID = '585847488'
-API_KEYS = ['4G8M6XH4J90KZ71K', 'HSQEM45D73VB2136']  # Le tue due API key
+API_KEYS = ['4G8M6XH4J90KZ71K', 'HSQEM45D73VB2136']
 SYMBOLS = ['XAU/USD', 'EUR/USD']
 CAPITAL = 5000
 RISK_PERCENTAGE = 0.02
@@ -56,7 +56,6 @@ def generate_signal(df):
     latest = df.iloc[-1]
     signals = []
 
-    # Segnali principali
     if latest['rsi'] < 30 and latest['macd'] > latest['macd_signal'] and latest['close'] > latest['ema']:
         signals.append('FORTE BUY')
     elif latest['rsi'] > 70 and latest['macd'] < latest['macd_signal'] and latest['close'] < latest['ema']:
@@ -66,9 +65,8 @@ def generate_signal(df):
     elif latest['rsi'] > 60 and latest['macd'] < latest['macd_signal']:
         signals.append('DEBOLE SELL')
 
-    # Filtri di conferma
     bb_confirm = latest['close'] < latest['bb_low'] or latest['close'] > latest['bb_high']
-    ichi_confirm = latest['tenkan'] > latest['kijun'] if 'BUY' in signals[0] else latest['tenkan'] < latest['kijun']
+    ichi_confirm = latest['tenkan'] > latest['kijun'] if signals and 'BUY' in signals[0] else latest['tenkan'] < latest['kijun']
 
     if signals:
         confermato = bb_confirm or ichi_confirm
@@ -78,7 +76,7 @@ def generate_signal(df):
 def calcola_lotto(atr, sl_pips):
     rischio = CAPITAL * RISK_PERCENTAGE
     valore_pip = rischio / sl_pips
-    lotto = round(valore_pip / 10, 2)  # semplificato per FX standard
+    lotto = round(valore_pip / 10, 2)
     return max(lotto, 0.01)
 
 def invia_messaggio(symbol, segnale, atr, confermato):
@@ -111,7 +109,8 @@ def job():
 
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
-    scheduler.add_job(job, IntervalTrigger(minutes=30))
+    trigger = IntervalTrigger(minutes=30, timezone=utc)
+    scheduler.add_job(job, trigger)
     scheduler.start()
     print("Bot avviato.")
     try:
