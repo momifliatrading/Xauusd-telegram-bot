@@ -108,7 +108,8 @@ def invia_messaggio(symbol, segnale, atr, confermato):
 
 def job():
     for symbol in SYMBOLS:
-        df = get_alpha_vantage_data(symbol, interval='1min', api_key=API_KEY)
+        interval = '10min' if symbol == 'XAU/USD' else '1min'
+        df = get_alpha_vantage_data(symbol, interval=interval, api_key=API_KEY)
         if df is None:
             continue
         df = analyze(df)
@@ -118,7 +119,7 @@ def job():
 
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
-    trigger = IntervalTrigger(minutes=1, timezone=utc)
+    trigger = IntervalTrigger(minutes=3, timezone=utc)  # Esecuzione ogni 3 minuti
     scheduler.add_job(job, trigger)
     scheduler.start()
     print("Bot avviato.")
