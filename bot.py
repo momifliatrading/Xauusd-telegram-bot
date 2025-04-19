@@ -12,7 +12,7 @@ import telegram
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
 CHAT_ID = '585847488'
 API_KEY = '8K05187USSNGO28Q'
-SYMBOLS = ['XAU/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF']
+SYMBOLS = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF']
 CAPITAL = 5000
 RISK_PERCENTAGE = 0.02
 
@@ -108,8 +108,7 @@ def invia_messaggio(symbol, segnale, atr, confermato):
 
 def job():
     for symbol in SYMBOLS:
-        interval = '10min' if symbol == 'XAU/USD' else '1min'
-        df = get_alpha_vantage_data(symbol, interval=interval, api_key=API_KEY)
+        df = get_alpha_vantage_data(symbol, interval='1min', api_key=API_KEY)
         if df is None:
             continue
         df = analyze(df)
