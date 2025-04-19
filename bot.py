@@ -11,15 +11,14 @@ import telegram
 # === CONFIG ===
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
 CHAT_ID = '585847488'
-API_KEYS = ['4G8M6XH4J90KZ71K', 'HSQEM45D73VB2136']
-SYMBOLS = ['XAU/USD', 'EUR/USD']
+API_KEY = '8K05187USSNGO28Q'
+SYMBOLS = ['XAU/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF']
 CAPITAL = 5000
 RISK_PERCENTAGE = 0.02
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
-api_index = 0
 
-def get_alpha_vantage_data(symbol, interval='15min', api_key=''):
+def get_alpha_vantage_data(symbol, interval='1min', api_key=''):
     function = "FX_INTRADAY"
     from_symbol, to_symbol = symbol.split('/')
     url = (
@@ -36,9 +35,12 @@ def get_alpha_vantage_data(symbol, interval='15min', api_key=''):
 
     key_fx = f'Time Series FX ({interval})'
     if key_fx not in data:
-        print(f"[ALERT] Errore: Dati non disponibili da Alpha Vantage per {symbol}")
-        print(f"[DEBUG] Risposta API: {data}")
-        bot.send_message(chat_id=CHAT_ID, text=f"[ERRORE] Dati non disponibili per {symbol}.", parse_mode=telegram.ParseMode.MARKDOWN)
+        print(f"[ERROR] Problema con i dati per {symbol}: {data}")
+        bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"[ERRORE] Problema con i dati per {symbol}. {data.get('Note', '')}",
+            parse_mode=telegram.ParseMode.MARKDOWN
+        )
         return None
 
     df = pd.DataFrame(data[key_fx]).T.astype(float)
@@ -105,11 +107,8 @@ def invia_messaggio(symbol, segnale, atr, confermato):
     bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
 
 def job():
-    global api_index
     for symbol in SYMBOLS:
-        key = API_KEYS[api_index % len(API_KEYS)]
-        api_index += 1
-        df = get_alpha_vantage_data(symbol, api_key=key)
+        df = get_alpha_vantage_data(symbol, interval='1min', api_key=API_KEY)
         if df is None:
             continue
         df = analyze(df)
@@ -119,7 +118,7 @@ def job():
 
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
-    trigger = IntervalTrigger(minutes=30, timezone=utc)
+    trigger = IntervalTrigger(minutes=1, timezone=utc)
     scheduler.add_job(job, trigger)
     scheduler.start()
     print("Bot avviato.")
