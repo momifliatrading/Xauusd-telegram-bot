@@ -7,6 +7,7 @@ from pytz import utc
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import telegram
+import matplotlib.pyplot as plt
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
@@ -17,6 +18,7 @@ CAPITAL = 5000
 RISK_PERCENTAGE = 0.02
 
 bot = telegram.Bot(token=TELEGRAM_TOKEN)
+segnali_generati = 0
 
 def get_alpha_vantage_data(symbol, interval='1min', api_key=''):
     function = "FX_INTRADAY"
@@ -25,22 +27,14 @@ def get_alpha_vantage_data(symbol, interval='1min', api_key=''):
         f'https://www.alphavantage.co/query?function={function}&from_symbol={from_symbol}'
         f'&to_symbol={to_symbol}&interval={interval}&outputsize=compact&apikey={api_key}'
     )
-    print(f"[INFO] Richiesta URL: {url}")
     r = requests.get(url)
     try:
         data = r.json()
     except Exception as e:
-        print(f"[ERROR] Decodifica JSON fallita: {e}")
         return None
 
     key_fx = f'Time Series FX ({interval})'
     if key_fx not in data:
-        print(f"[ERROR] Problema con i dati per {symbol}: {data}")
-        bot.send_message(
-            chat_id=CHAT_ID,
-            text=f"[ERRORE] Problema con i dati per {symbol}. {data.get('Note', '')}",
-            parse_mode=telegram.ParseMode.MARKDOWN
-        )
         return None
 
     df = pd.DataFrame(data[key_fx]).T.astype(float)
@@ -91,12 +85,30 @@ def calcola_lotto(atr, sl_pips):
     lotto = round(valore_pip / 10, 2)
     return max(lotto, 0.01)
 
-def invia_messaggio(symbol, segnale, atr, confermato):
+def plot_chart(df, symbol, signal):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for i in range(len(df)):
+        color = 'green' if df['close'].iloc[i] >= df['open'].iloc[i] else 'red'
+        ax.plot([df.index[i], df.index[i]], [df['low'].iloc[i], df['high'].iloc[i]], color=color)
+        ax.plot([df.index[i], df.index[i]], [df['open'].iloc[i], df['close'].iloc[i]], color=color, linewidth=4)
+
+    ax.plot(df.index, df['ema'], label='EMA 50', linestyle='--', linewidth=1.2)
+    ax.set_title(f"{symbol} - Segnale: {signal}")
+    ax.legend()
+    ax.grid(True)
+    file_path = f"{symbol.replace('/', '_')}_chart.png"
+    plt.tight_layout()
+    plt.savefig(file_path)
+    plt.close()
+    return file_path
+
+def invia_messaggio(symbol, segnale, atr, confermato, df):
+    global segnali_generati
     sl = round(atr * 1.5, 3)
     tp = round(atr * (2.5 if 'FORTE' in segnale else 1.5), 3)
     lotto = calcola_lotto(atr, sl)
-
     stato = "CONFERMATO" if confermato else "DA CONFERMARE"
+
     msg = (
         f"**Segnale {segnale} su {symbol}**\n"
         f"Stato: {stato}\n"
@@ -106,6 +118,13 @@ def invia_messaggio(symbol, segnale, atr, confermato):
     )
     bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
 
+    # Invio immagine
+    image_path = plot_chart(df.tail(50), symbol, segnale)
+    with open(image_path, 'rb') as f:
+        bot.send_photo(chat_id=CHAT_ID, photo=f)
+
+    segnali_generati += 1
+
 def job():
     for symbol in SYMBOLS:
         df = get_alpha_vantage_data(symbol, interval='1min', api_key=API_KEY)
@@ -114,12 +133,22 @@ def job():
         df = analyze(df)
         segnale, atr, confermato = generate_signal(df)
         if segnale:
-            invia_messaggio(symbol, segnale, atr, confermato)
+            invia_messaggio(symbol, segnale, atr, confermato, df)
+
+def report_status():
+    global segnali_generati
+    msg = (
+        f"[STATUS] Il bot è attivo.\n"
+        f"Ultimo controllo: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Segnali rilevati nelle ultime 3 ore: {segnali_generati}"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=msg)
+    segnali_generati = 0
 
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
-    trigger = IntervalTrigger(minutes=3, timezone=utc)  # Esecuzione ogni 3 minuti
-    scheduler.add_job(job, trigger)
+    scheduler.add_job(job, IntervalTrigger(minutes=3, timezone=utc))
+    scheduler.add_job(report_status, IntervalTrigger(hours=3, timezone=utc))
     scheduler.start()
     print("Bot avviato.")
     try:
