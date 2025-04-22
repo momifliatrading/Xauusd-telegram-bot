@@ -7,3 +7,4 @@ lxml
 beautifulsoup4
 apscheduler
 python-telegram-bot==13.15
+matplotlib
