@@ -167,3 +167,36 @@ if __name__ == '__main__':
     except (KeyboardInterrupt, SystemExit):
         bot.send_message(chat_id=CHAT_ID, text="Bot arrestato manualmente.")
         scheduler.shutdown()
+        def invia_messaggio(symbol, segnale, atr, confermato, df):
+    global segnali_generati
+
+    # Filtro sicurezza: blocca segnali con ATR troppo basso
+    if atr < 0.0005:  # Puoi regolare questa soglia per ogni simbolo!
+        print(f"Segnale scartato su {symbol}: ATR troppo basso ({atr})")
+        return  # Non invia il messaggio e non calcola niente
+
+    sl = round(atr * 1.5, 3)
+    tp = round(atr * (2.5 if 'FORTE' in segnale else 1.5), 3)
+    
+    # Ulteriore sicurezza: se SL o TP sono comunque troppo bassi
+    if sl < 0.0005 or tp < 0.0005:
+        print(f"Segnale scartato su {symbol}: SL o TP troppo bassi (SL: {sl}, TP: {tp})")
+        return
+
+    lotto = calcola_lotto(atr, sl)
+    stato = "CONFERMATO" if confermato else "DA CONFERMARE"
+
+    msg = (
+        f"**Segnale {segnale} su {symbol}**\n"
+        f"Stato: {stato}\n"
+        f"TP: {tp} | SL: {sl}\n"
+        f"Lotto consigliato: {lotto}\n"
+        f"Orario: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode=telegram.ParseMode.MARKDOWN)
+
+    image_path = plot_chart(df.tail(50), symbol, segnale)
+    with open(image_path, 'rb') as f:
+        bot.send_photo(chat_id=CHAT_ID, photo=f)
+
+    segnali_generati += 1
