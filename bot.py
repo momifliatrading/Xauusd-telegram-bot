@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import telegram
 import matplotlib.pyplot as plt
+import time
 
 # === CONFIG ===
 TELEGRAM_TOKEN = '8062957086:AAFCPvaa9AJ04ZYD3Sm3yaE-Od4ExsO2HW8'
@@ -145,14 +146,24 @@ def report_status():
     bot.send_message(chat_id=CHAT_ID, text=msg)
     segnali_generati = 0
 
+def alive_message():
+    bot.send_message(chat_id=CHAT_ID, text="Bot ancora attivo.")
+
 if __name__ == '__main__':
     scheduler = BackgroundScheduler(timezone=utc)
     scheduler.add_job(job, IntervalTrigger(minutes=3, timezone=utc))
     scheduler.add_job(report_status, IntervalTrigger(hours=3, timezone=utc))
+    scheduler.add_job(alive_message, IntervalTrigger(hours=1, timezone=utc))
     scheduler.start()
     print("Bot avviato.")
+    bot.send_message(chat_id=CHAT_ID, text="Bot avviato e funzionante!")
+
     try:
         while True:
-            pass
+            time.sleep(1)
+    except Exception as e:
+        bot.send_message(chat_id=CHAT_ID, text=f"BOT FERMATO! Errore: {str(e)}")
+        scheduler.shutdown()
     except (KeyboardInterrupt, SystemExit):
+        bot.send_message(chat_id=CHAT_ID, text="Bot arrestato manualmente.")
         scheduler.shutdown()
